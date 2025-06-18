@@ -1,0 +1,68 @@
+{
+  "Comment": "AWS Quota Check and Alert Step Function",
+  "StartAt": "RunAllChecks",
+  "States": {
+    "RunAllChecks": {
+      "Type": "Map",
+      "ItemsPath": "$.check_batches",
+      "ResultPath": "$.check_results",
+      "Parameters": {
+        "check_batch.$": "$$.Map.Item.Value"
+      },
+      "Iterator": {
+        "StartAt": "RunQuotaCheck",
+        "States": {
+          "RunQuotaCheck": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:REGION:ACCOUNT_ID:function:QuotaCheckerLambda",
+            "ResultPath": "$.result",
+            "TimeoutSeconds": 300,
+            "End": true
+          }
+        }
+      },
+      "Next": "AggregateResults"
+    },
+    "AggregateResults": {
+      "Type": "Pass",
+      "Parameters": {
+        "raw_bodies.$": "$.check_results[*].result"
+      },
+      "ResultPath": "$.raw_bodies",
+      "Next": "MergeResults"
+    },
+    "MergeResults": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:REGION:ACCOUNT_ID:function:QuotaMergeLambda",
+      "ResultPath": "$.evaluation",
+      "Next": "CheckAlertNeeded"
+    },
+    "CheckAlertNeeded": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.evaluation.alert_needed",
+          "BooleanEquals": true,
+          "Next": "SendSNSAlert"
+        }
+      ],
+      "Default": "Done"
+    },
+    "SendSNSAlert": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:REGION:ACCOUNT_ID:aws-quota-alerts",
+        "Subject": "AWS Quota Usage Alert (Above 70%)",
+        "Message.$": "States.Format('AWS Quota Alert:\n\n{}', States.JsonToString($.evaluation.alert_data))"
+      },
+      "ResultPath": "$.sns_response",
+      "Next": "Done"
+    },
+    "Done": {
+      "Type": "Pass",
+      "Result": "Complete",
+      "End": true
+    }
+  }
+}
